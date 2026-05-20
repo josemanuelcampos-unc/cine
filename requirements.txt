@@ -4,4 +4,4 @@ asyncpg==0.30.0
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
 python-multipart==0.0.17
-pydantic[email]==2.10.3
+pydantic[email]==2.11.4
