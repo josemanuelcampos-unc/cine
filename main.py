@@ -3,15 +3,12 @@ Evaluador CINE — Backend FastAPI
 Secretaría de Asuntos Académicos, UNC
 """
 
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from contextlib import asynccontextmanager
-import os
 
-from database import get_db, init_db
+from database import init_db
 from routers import auth, propuestas, evaluaciones
-from models import Base
 
 
 @asynccontextmanager
@@ -27,7 +24,6 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS — en producción reemplazá el "*" por el dominio del frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
