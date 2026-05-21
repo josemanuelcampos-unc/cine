@@ -1,11 +1,12 @@
 """
-Router de autenticación: login, registro, usuario actual
+Router de autenticación usando Supabase REST API
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from pydantic import BaseModel, EmailStr
-import asyncpg
+from pydantic import BaseModel
+import httpx
+import json
 
 from database import get_db
 from auth_utils import hash_password, verify_password, create_access_token, decode_token
@@ -14,13 +15,10 @@ router = APIRouter()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 
-# ── Schemas ────────────────────────────────────────────────
-
 class UsuarioCreate(BaseModel):
     email: str
     nombre: str
     password: str
-
 
 class UsuarioOut(BaseModel):
     id: str
@@ -28,46 +26,38 @@ class UsuarioOut(BaseModel):
     nombre: str
     rol: str
 
-
 class Token(BaseModel):
     access_token: str
     token_type: str
     usuario: UsuarioOut
 
 
-# ── Dependencia: usuario actual desde JWT ──────────────────
-
 async def get_current_user(
     token: str = Depends(oauth2_scheme),
-    db: asyncpg.Connection = Depends(get_db)
+    db: httpx.AsyncClient = Depends(get_db)
 ) -> dict:
     payload = decode_token(token)
     if not payload:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token inválido o expirado")
+        raise HTTPException(status_code=401, detail="Token inválido o expirado")
 
-    user = await db.fetchrow(
-        "SELECT id::text, email, nombre, rol FROM usuarios WHERE id = $1::uuid AND activo = TRUE",
-        payload.get("sub")
-    )
-    if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Usuario no encontrado")
-    return dict(user)
+    r = await db.get(f"/usuarios?id=eq.{payload.get('sub')}&activo=eq.true&select=id,email,nombre,rol")
+    users = r.json()
+    if not users:
+        raise HTTPException(status_code=401, detail="Usuario no encontrado")
+    return users[0]
 
-
-# ── Endpoints ──────────────────────────────────────────────
 
 @router.post("/login", response_model=Token)
 async def login(
     form: OAuth2PasswordRequestForm = Depends(),
-    db: asyncpg.Connection = Depends(get_db)
+    db: httpx.AsyncClient = Depends(get_db)
 ):
-    user = await db.fetchrow(
-        "SELECT id::text, email, nombre, rol, password_hash FROM usuarios WHERE email = $1 AND activo = TRUE",
-        form.username
-    )
-    if not user or not verify_password(form.password, user["password_hash"]):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Email o contraseña incorrectos")
+    r = await db.get(f"/usuarios?email=eq.{form.username}&activo=eq.true&select=id,email,nombre,rol,password_hash")
+    users = r.json()
+    if not users or not verify_password(form.password, users[0]["password_hash"]):
+        raise HTTPException(status_code=401, detail="Email o contraseña incorrectos")
 
+    user = users[0]
     token = create_access_token({"sub": user["id"]})
     return {
         "access_token": token,
@@ -79,21 +69,25 @@ async def login(
 @router.post("/registro", response_model=UsuarioOut, status_code=201)
 async def registro(
     data: UsuarioCreate,
-    db: asyncpg.Connection = Depends(get_db)
+    db: httpx.AsyncClient = Depends(get_db)
 ):
-    existing = await db.fetchrow("SELECT id FROM usuarios WHERE email = $1", data.email)
-    if existing:
+    existing = await db.get(f"/usuarios?email=eq.{data.email}&select=id")
+    if existing.json():
         raise HTTPException(status_code=400, detail="El email ya está registrado")
 
-    row = await db.fetchrow(
-        """INSERT INTO usuarios (email, nombre, password_hash)
-           VALUES ($1, $2, $3)
-           RETURNING id::text, email, nombre, rol""",
-        data.email, data.nombre, hash_password(data.password)
-    )
-    return dict(row)
+    r = await db.post("/usuarios", content=json.dumps({
+        "email": data.email,
+        "nombre": data.nombre,
+        "password_hash": hash_password(data.password),
+        "rol": "evaluador",
+        "activo": True
+    }))
+    if r.status_code not in (200, 201):
+        raise HTTPException(status_code=500, detail="Error al crear usuario")
+    return r.json()[0]
 
 
 @router.get("/me", response_model=UsuarioOut)
 async def me(current_user: dict = Depends(get_current_user)):
     return current_user
+
