@@ -1,11 +1,12 @@
 """
-Router de propuestas curriculares
+Router de propuestas usando Supabase REST API
 """
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional
-import asyncpg
+import httpx
+import json
 
 from database import get_db
 from routers.auth import get_current_user
@@ -13,83 +14,58 @@ from routers.auth import get_current_user
 router = APIRouter()
 
 
-# ── Schemas ────────────────────────────────────────────────
-
 class PropuestaCreate(BaseModel):
     titulo: str
     texto_fuente: Optional[str] = None
     unidad_academica: Optional[str] = None
 
 
-class PropuestaOut(BaseModel):
-    id: str
-    titulo: str
-    texto_fuente: Optional[str]
-    unidad_academica: Optional[str]
-    creado_en: str
-
-
-# ── Endpoints ──────────────────────────────────────────────
-
-@router.post("/", response_model=PropuestaOut, status_code=201)
+@router.post("/", status_code=201)
 async def crear_propuesta(
     data: PropuestaCreate,
     current_user: dict = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db)
+    db: httpx.AsyncClient = Depends(get_db)
 ):
-    row = await db.fetchrow(
-        """INSERT INTO propuestas (titulo, texto_fuente, unidad_academica, creado_por)
-           VALUES ($1, $2, $3, $4::uuid)
-           RETURNING id::text, titulo, texto_fuente, unidad_academica,
-                     to_char(creado_en, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as creado_en""",
-        data.titulo, data.texto_fuente, data.unidad_academica, current_user["id"]
-    )
-    return dict(row)
+    r = await db.post("/propuestas", content=json.dumps({
+        "titulo": data.titulo,
+        "texto_fuente": data.texto_fuente,
+        "unidad_academica": data.unidad_academica,
+        "creado_por": current_user["id"]
+    }))
+    if r.status_code not in (200, 201):
+        raise HTTPException(status_code=500, detail="Error al crear propuesta")
+    return r.json()[0]
 
 
-@router.get("/", response_model=list[PropuestaOut])
+@router.get("/")
 async def listar_propuestas(
     current_user: dict = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db)
+    db: httpx.AsyncClient = Depends(get_db)
 ):
-    rows = await db.fetch(
-        """SELECT id::text, titulo, texto_fuente, unidad_academica,
-                  to_char(creado_en, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as creado_en
-           FROM propuestas
-           WHERE creado_por = $1::uuid
-           ORDER BY creado_en DESC""",
-        current_user["id"]
-    )
-    return [dict(r) for r in rows]
+    r = await db.get(f"/propuestas?creado_por=eq.{current_user['id']}&order=creado_en.desc")
+    return r.json()
 
 
-@router.get("/{propuesta_id}", response_model=PropuestaOut)
+@router.get("/{propuesta_id}")
 async def obtener_propuesta(
     propuesta_id: str,
     current_user: dict = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db)
+    db: httpx.AsyncClient = Depends(get_db)
 ):
-    row = await db.fetchrow(
-        """SELECT id::text, titulo, texto_fuente, unidad_academica,
-                  to_char(creado_en, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') as creado_en
-           FROM propuestas
-           WHERE id = $1::uuid AND creado_por = $2::uuid""",
-        propuesta_id, current_user["id"]
-    )
-    if not row:
+    r = await db.get(f"/propuestas?id=eq.{propuesta_id}&creado_por=eq.{current_user['id']}")
+    rows = r.json()
+    if not rows:
         raise HTTPException(status_code=404, detail="Propuesta no encontrada")
-    return dict(row)
+    return rows[0]
 
 
 @router.delete("/{propuesta_id}", status_code=204)
 async def eliminar_propuesta(
     propuesta_id: str,
     current_user: dict = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db)
+    db: httpx.AsyncClient = Depends(get_db)
 ):
-    result = await db.execute(
-        "DELETE FROM propuestas WHERE id = $1::uuid AND creado_por = $2::uuid",
-        propuesta_id, current_user["id"]
-    )
-    if result == "DELETE 0":
+    r = await db.delete(f"/propuestas?id=eq.{propuesta_id}&creado_por=eq.{current_user['id']}")
+    if r.status_code not in (200, 204):
         raise HTTPException(status_code=404, detail="Propuesta no encontrada")
+
